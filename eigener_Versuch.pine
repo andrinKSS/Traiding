@@ -1,0 +1,124 @@
+//@version=6
+strategy(
+    "BB Trading Strategie – FINAL STABIL",
+    overlay = true,
+    initial_capital = 1000,
+    default_qty_type = strategy.percent_of_equity,
+    default_qty_value = 10,
+    pyramiding = 0,
+    calc_on_every_tick = true,
+    commission_type = strategy.commission.percent,
+    commission_value = 0.05
+)
+
+// ===============================
+// Bollinger Bands Setup
+// ===============================
+laenge = input.int(20)
+multiplikator = input.float(2.0)
+
+mittellinie = ta.sma(close, laenge)
+abweichung = multiplikator * ta.stdev(close, laenge)
+obereLinie = mittellinie + abweichung
+untereLinie = mittellinie - abweichung
+
+plot(mittellinie, "Mittellinie", color=color.blue, linewidth=2)
+p1 = plot(obereLinie, "Obere Linie (ROT)", color=color.red)
+p2 = plot(untereLinie, "Untere Linie (GRÜN)", color=color.green)
+fill(p1, p2, color.new(color.blue, 90))
+
+// ===============================
+// Position Status
+// ===============================
+istPositionOffen = strategy.position_size != 0
+
+// ===============================
+// Gespeicherte Trade Daten
+// ===============================
+var float entryPrice = na
+var bool tp1Erreicht = false
+var bool long = false   // true = LONG, false = SHORT
+var float festerStopLoss = na
+
+// ===============================
+// EINSTIEG – sofort bei Linien-Touch
+// ===============================
+if close <= untereLinie and not istPositionOffen
+    strategy.entry("Long", strategy.long)
+
+if close >= obereLinie and not istPositionOffen
+    strategy.entry("Short", strategy.short)
+
+// ===============================
+// NACH EINSTIEG – Daten speichern
+// ===============================
+if strategy.position_size[1] == 0 and istPositionOffen
+    entryPrice := strategy.position_avg_price
+
+    if strategy.position_size > 0
+        long := true
+    else
+        long := false
+   
+    distanz = math.abs(entryPrice - mittellinie)
+    festerStopLoss := long ? entryPrice - distanz : entryPrice + distanz
+
+    tp1Erreicht := false
+
+// PHASE 1 – GEWINNMITNAHME 1 (50%) NUR mit LIMIT
+if istPositionOffen and not tp1Erreicht
+    strategy.exit(
+        id = "Gewinn1",
+        from_entry = long ? "Long" : "Short",
+        qty_percent = 50,
+        limit = mittellinie
+    )
+
+// PHASE 1 – STOPP-LOSS für KOMPLETTE Position (100%)
+if istPositionOffen and not tp1Erreicht
+    strategy.exit(
+        id = "StoppVoll",
+        from_entry = long ? "Long" : "Short",
+        qty_percent = 100,
+        stop = festerStopLoss
+    )
+
+// ===============================
+// PHASE 1 ERREICHT – wenn 50% raus sind
+// ===============================
+if strategy.position_size < strategy.position_size[1]
+    tp1Erreicht := true
+
+// ===============================
+// PHASE 2 – REST mit NEUER STOPP auf Eingang
+// ===============================
+if istPositionOffen and tp1Erreicht
+    strategy.exit(
+        id = "Gewinn2",
+        from_entry = long ? "Long" : "Short",
+        limit = long ? obereLinie : untereLinie,
+        stop = entryPrice
+    )
+
+// ===============================
+// ZURÜCKSETZEN wenn Position weg
+// ===============================
+if istPositionOffen[1] and not istPositionOffen
+    // Cancel alle offenen Orders damit sie nicht später triggern
+    strategy.cancel("Gewinn1")
+    strategy.cancel("StoppVoll")
+    strategy.cancel("Gewinn2")
+    
+    entryPrice := na
+    festerStopLoss := na
+    tp1Erreicht := false
+    long := false
+
+// ===============================
+// ANZEIGE – zum visuellen Debuggen
+// ===============================
+plot(festerStopLoss, "Stopp", color=color.red, linewidth=2, style=plot.style_cross)
+plot(mittellinie, "Ziel 1", color=color.blue)
+plot(long ? obereLinie : untereLinie, "Ziel 2", color=color.orange)
+plotshape(low <= untereLinie and not istPositionOffen, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(high >= obereLinie and not istPositionOffen, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)

@@ -1,0 +1,110 @@
+//@version=6
+strategy(
+    "BB Trading Strategie – FINAL STABIL",
+    overlay = true,
+    initial_capital = 10000,
+    default_qty_type = strategy.percent_of_equity,
+    default_qty_value = 10,
+    pyramising = 0,
+    calc_on_every_tick = true,
+    commission_type = strategy.commission.percent,
+    commission_value = 0.05
+)
+
+// ===============================
+// Bollinger Bands Setup
+// ===============================
+laenge = input.int(20)
+multiplikator = input.float(2.0)
+
+mittellinie = ta.sma(close, laenge)
+abweichung = multiplikator * ta.stdev(close, laenge)
+obereLinie = mittellinie + abweichung
+untereLinie = mittellinie - abweichung
+
+plot(mittellinie, "Mittellinie", color=color.blue, linewidth=2)
+p1 = plot(obereLinie, "Obere Linie (ROT)", color=color.red)
+p2 = plot(untereLinie, "Untere Linie (GRÜN)", color=color.green)
+fill(p1, p2, color.new(color.blue, 90))
+
+// ===============================
+// Position Status
+// ===============================
+hatPosition = strategy.position_size != 0
+
+// ===============================
+// Gespeicherte Trade Daten
+// ===============================
+var float eingabePreis = na
+var float festerStopLoss = na
+var bool tp1Erreicht = false
+var int handelsRichtung = 0   // 1 = LONG, -1 = SHORT
+
+// ===============================
+// EINSTIEG – sofort bei Linien-Touch
+// ===============================
+if low <= untereLinie and not hatPosition
+    strategy.entry("Long", strategy.long)
+
+if high >= obereLinie and not hatPosition
+    strategy.entry("Short", strategy.short)
+
+// ===============================
+// NACH EINSTIEG – Daten speichern
+// ===============================
+if strategy.position_size[1] == 0 and hatPosition
+    eingabePreis := strategy.position_avg_price
+    handelsRichtung := strategy.position_size > 0 ? 1 : -1
+
+    distanz = math.abs(eingabePreis - mittellinie)
+    festerStopLoss := handelsRichtung == 1 ? eingabePreis - distanz : eingabePreis + distanz
+
+    tp1Erreicht := false
+
+// ===============================
+// PHASE 1 – GEWINNMITNAHME 1 (50%) + FESTER STOPP
+// ===============================
+if hatPosition and not tp1Erreicht
+    strategy.exit(
+        id = "Gewinn1",
+        from_entry = handelsRichtung == 1 ? "Long" : "Short",
+        qty_percent = 50,
+        limit = mittellinie,
+        stop = festerStopLoss
+    )
+
+// ===============================
+// PHASE 1 ERREICHT – wenn 50% raus sind
+// ===============================
+if hatPosition and strategy.position_size != strategy.position_size[1]
+    tp1Erreicht := true
+
+// ===============================
+// PHASE 2 – REST mit NEUER STOPP auf Eingang
+// ===============================
+if hatPosition and tp1Erreicht
+    strategy.exit(
+        id = "Gewinn2",
+        from_entry = handelsRichtung == 1 ? "Long" : "Short",
+        limit = handelsRichtung == 1 ? obereLinie : untereLinie,
+        stop = eingabePreis
+    )
+
+// ===============================
+// ZURÜCKSETZEN wenn Position weg
+// ===============================
+if hatPosition[1] and not hatPosition
+    eingabePreis := na
+    festerStopLoss := na
+    tp1Erreicht := false
+    handelsRichtung := 0
+
+// ===============================
+// ANZEIGE – zum visuellen Debuggen
+// ===============================
+plot(festerStopLoss, "Stopp", color=color.red, linewidth=2, style=plot.style_cross)
+plot(mittellinie, "Ziel 1", color=color.blue)
+plot(handelsRichtung == 1 ? obereLinie : handelsRichtung == -1 ? untereLinie : na, "Ziel 2", color=color.orange)
+
+plotshape(low <= untereLinie and not hatPosition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(high >= obereLinie and not hatPosition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
