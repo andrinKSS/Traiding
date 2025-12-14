@@ -1,110 +1,116 @@
 //@version=6
 strategy(
-    "BB Trading Strategie – FINAL STABIL",
+    "BB Trading Strategie – STABIL FINAL",
     overlay = true,
-    initial_capital = 10000,
+    initial_capital = 1000,
     default_qty_type = strategy.percent_of_equity,
     default_qty_value = 10,
-    pyramising = 0,
+    pyramiding = 0,
     calc_on_every_tick = true,
     commission_type = strategy.commission.percent,
     commission_value = 0.05
 )
 
 // ===============================
-// Bollinger Bands Setup
+// Bollinger Bands
 // ===============================
-laenge = input.int(20)
-multiplikator = input.float(2.0)
+length = input.int(20, "BB Länge")
+mult   = input.float(2.0, "Multiplikator")
 
-mittellinie = ta.sma(close, laenge)
-abweichung = multiplikator * ta.stdev(close, laenge)
-obereLinie = mittellinie + abweichung
-untereLinie = mittellinie - abweichung
+basis = ta.sma(close, length)
+dev   = mult * ta.stdev(close, length)
+upper = basis + dev
+lower = basis - dev
 
-plot(mittellinie, "Mittellinie", color=color.blue, linewidth=2)
-p1 = plot(obereLinie, "Obere Linie (ROT)", color=color.red)
-p2 = plot(untereLinie, "Untere Linie (GRÜN)", color=color.green)
+plot(basis, "Basis", color=color.blue, linewidth=2)
+p1 = plot(upper, "Obere Linie (ROT)", color=color.red)
+p2 = plot(lower, "Untere Linie (GRÜN)", color=color.green)
 fill(p1, p2, color.new(color.blue, 90))
 
 // ===============================
-// Position Status
+// Persistente Trade-Daten
 // ===============================
-hatPosition = strategy.position_size != 0
+var float entryPrice = na
+var float stopFix    = na
+var bool  tp1Hit     = false
+var int   tradeDir   = 0   // 1 = Long, -1 = Short
+
+hasPos = strategy.position_size != 0
 
 // ===============================
-// Gespeicherte Trade Daten
+// ENTRY – sofort bei Touch
 // ===============================
-var float eingabePreis = na
-var float festerStopLoss = na
-var bool tp1Erreicht = false
-var int handelsRichtung = 0   // 1 = LONG, -1 = SHORT
-
-// ===============================
-// EINSTIEG – sofort bei Linien-Touch
-// ===============================
-if low <= untereLinie and not hatPosition
+if low <= lower and not hasPos
     strategy.entry("Long", strategy.long)
-
-if high >= obereLinie and not hatPosition
+if high >= upper and not hasPos
     strategy.entry("Short", strategy.short)
 
 // ===============================
-// NACH EINSTIEG – Daten speichern
+// INITIALISIERUNG NACH FILL
 // ===============================
-if strategy.position_size[1] == 0 and hatPosition
-    eingabePreis := strategy.position_avg_price
-    handelsRichtung := strategy.position_size > 0 ? 1 : -1
+if na(entryPrice) and hasPos
+    entryPrice := strategy.position_avg_price
+    tradeDir   := strategy.position_size > 0 ? 1 : -1
 
-    distanz = math.abs(eingabePreis - mittellinie)
-    festerStopLoss := handelsRichtung == 1 ? eingabePreis - distanz : eingabePreis + distanz
+    dist = math.abs(entryPrice - basis)
+    stopFix := tradeDir == 1 ? entryPrice - dist : entryPrice + dist
 
-    tp1Erreicht := false
+    tp1Hit := false
 
 // ===============================
-// PHASE 1 – GEWINNMITNAHME 1 (50%) + FESTER STOPP
+// PHASE 1 – TP1 (50 %) + fixer SL
 // ===============================
-if hatPosition and not tp1Erreicht
+if hasPos and not tp1Hit
+    // 50%-TP nur als Limit
     strategy.exit(
-        id = "Gewinn1",
-        from_entry = handelsRichtung == 1 ? "Long" : "Short",
+        id = "Phase1",
+        from_entry = tradeDir == 1 ? "Long" : "Short",
         qty_percent = 50,
-        limit = mittellinie,
-        stop = festerStopLoss
+        limit = basis,
+        stop  = na
     )
-
-// ===============================
-// PHASE 1 ERREICHT – wenn 50% raus sind
-// ===============================
-if hatPosition and strategy.position_size != strategy.position_size[1]
-    tp1Erreicht := true
-
-// ===============================
-// PHASE 2 – REST mit NEUER STOPP auf Eingang
-// ===============================
-if hatPosition and tp1Erreicht
+    // Voll-SL separat, solange TP1 nicht getroffen
     strategy.exit(
-        id = "Gewinn2",
-        from_entry = handelsRichtung == 1 ? "Long" : "Short",
-        limit = handelsRichtung == 1 ? obereLinie : untereLinie,
-        stop = eingabePreis
+        id = "StopFull",
+        from_entry = tradeDir == 1 ? "Long" : "Short",
+        qty_percent = 100,
+        stop = stopFix,
+        limit = na
+    )
+
+// TP1 HIT DETECTION – nur bei Kurs-Touch der Basis, nicht bei SL-Fill
+if hasPos and not tp1Hit
+    tp1Hit := tradeDir == 1 ? high >= basis : low <= basis
+    if tp1Hit
+        strategy.cancel("StopFull")
+
+// ===============================
+// PHASE 2 – TP2 + Break-Even
+// ===============================
+if hasPos and tp1Hit
+    strategy.exit(
+        id = "Phase2",
+        from_entry = tradeDir == 1 ? "Long" : "Short",
+        limit = tradeDir == 1 ? upper : lower,
+        stop  = entryPrice
     )
 
 // ===============================
-// ZURÜCKSETZEN wenn Position weg
+// RESET nach Positionsende
 // ===============================
-if hatPosition[1] and not hatPosition
-    eingabePreis := na
-    festerStopLoss := na
-    tp1Erreicht := false
-    handelsRichtung := 0
+if hasPos[1] and not hasPos
+    entryPrice := na
+    stopFix := na
+    tp1Hit := false
+    tradeDir := 0
+    strategy.cancel("StopFull")
 
 // ===============================
-// ANZEIGE – zum visuellen Debuggen
+// VISUAL DEBUG
 // ===============================
-plot(festerStopLoss, "Stopp", color=color.red, linewidth=2, style=plot.style_cross)
-plot(mittellinie, "Ziel 1", color=color.blue)
-plot(handelsRichtung == 1 ? obereLinie : handelsRichtung == -1 ? untereLinie : na, "Ziel 2", color=color.orange)
+plot(stopFix, "SL", color=color.red, linewidth=2, style=plot.style_cross)
+plot(basis, "TP1", color=color.blue)
+plot(tradeDir == 1 ? upper : tradeDir == -1 ? lower : na, "TP2", color=color.orange)
 
-plotshape(low <= untereLinie and not hatPosition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
-plotshape(high >= obereLinie and not hatPosition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+plotshape(low <= lower and not hasPos, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(high >= upper and not hasPos, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
