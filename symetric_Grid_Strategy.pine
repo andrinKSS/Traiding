@@ -1,0 +1,70 @@
+//@version=5
+strategy("BTC Symmetric Grid Strategy (Long + Short)", 
+     overlay=true,
+     pyramiding=50, 
+     initial_capital=10000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.04)
+
+//---------------------------------------------------------
+// Inputs
+//---------------------------------------------------------
+gridSize = input.float(200.0, "Grid Distance (USD)", minval=5)
+orderSize = input.float(50, "Order Size per Grid (USD value)", minval=5)
+useStop = input.bool(false, "Use Stop Loss?")
+stopPerc = input.float(10, "Stop %", minval=1)
+
+//---------------------------------------------------------
+// Grid Logic
+//---------------------------------------------------------
+var float basePrice = close        // Startpunkt des Grids
+var float nextLongBuy = basePrice - gridSize
+var float nextLongSell = basePrice + gridSize
+var float nextShortSell = basePrice + gridSize
+var float nextShortCover = basePrice - gridSize
+
+// Reset Grid nach Vollständiger Bewegung
+if close > basePrice + 4 * gridSize or close < basePrice - 4 * gridSize
+    basePrice := close
+    nextLongBuy := basePrice - gridSize
+    nextLongSell := basePrice + gridSize
+    nextShortSell := basePrice + gridSize
+    nextShortCover := basePrice - gridSize
+
+//---------------------------------------------------------
+// LONG GRID
+//---------------------------------------------------------
+
+// Long Buy (Kurs fällt)
+if close <= nextLongBuy
+    qtyLong = orderSize / close
+    strategy.entry("LongBuy", strategy.long, qty=qtyLong)
+    nextLongBuy := nextLongBuy - gridSize
+    nextLongSell := nextLongSell + gridSize
+
+// Long Sell (Kurs steigt)
+if close >= nextLongSell and strategy.position_size > 0
+    strategy.close("LongBuy")
+    nextLongSell := nextLongSell + gridSize
+
+//---------------------------------------------------------
+// SHORT GRID
+//---------------------------------------------------------
+
+// Short Sell (Kurs steigt)
+if close >= nextShortSell
+    qtyShort = orderSize / close
+    strategy.entry("ShortSell", strategy.short, qty=qtyShort)
+    nextShortSell := nextShortSell + gridSize
+    nextShortCover := nextShortCover - gridSize
+
+// Short Cover (Kurs fällt)
+if close <= nextShortCover and strategy.position_size < 0
+    strategy.close("ShortSell")
+    nextShortCover := nextShortCover - gridSize
+
+//---------------------------------------------------------
+// Optional: Stop-Loss
+//---------------------------------------------------------
+if useStop and strategy.position_size != 0
+    strategy.exit("Stop", stop=strategy.position_avg_price * (1 - stopPerc/100))
