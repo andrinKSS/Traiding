@@ -1,0 +1,175 @@
+﻿//@version=6
+strategy(
+    "BB Trading Strategie - VWMA TP1 (50%) & BB TP2 (50%) - Korrigiert",
+    overlay = true,
+    initial_capital = 1000,
+    default_qty_type = strategy.percent_of_equity,
+    default_qty_value = 10,
+    pyramiding = 0,
+    // WICHTIG: calc_on_every_tick = false setzen
+    calc_on_every_tick = false,
+    commission_type = strategy.commission.percent,
+    commission_value = 0.05
+)
+
+// === INPUTS & INDIKATOREN ===
+length = input.int(20, "BB Länge")
+mult   = input.float(2.0, "Multiplikator")
+vwmaLength = input.int(275, "VWMA Länge (TP1)")
+slPercentInput = input.float(0.56, "SL % (Stage 1)", step=0.01)
+
+// Bollinger Bänder
+basis = ta.sma(close, length)
+dev   = mult * ta.stdev(close, length)
+upper = basis + dev
+lower = basis - dev
+
+// VWMA für TP1
+vwma = ta.vwma(close, vwmaLength)
+
+// Plot Bollinger Bänder
+plot(basis, "Basis", color=color.blue, linewidth=2)
+p1 = plot(upper, "Upper", color=color.red)
+p2 = plot(lower, "Lower", color=color.green)
+fill(p1, p2, color.new(color.blue, 90))
+
+// Plot VWMA
+plot(vwma, "VWMA (TP1)", color=color.orange, linewidth=2, style=plot.style_line)
+
+// === STATUS-MANAGEMENT ===
+var int stage = 0 
+var float entryPrice = na
+var float slPrice = na
+var int tradeDir = 0 // 1=Long, -1=Short
+var bool waitingForBasisTouch = false 
+var int lastTradeDir = 0 
+var float prevPositionSize = 0.0
+var bool tp1Executed = false  // NEUE Variable: TP1 wurde ausgeführt
+var float tp1ExitPrice = na   // Preis, zu dem TP1 ausgeführt wurde
+
+isPos = strategy.position_size != 0
+posDir = strategy.position_size > 0 ? 1 : (strategy.position_size < 0 ? -1 : 0)
+
+// Prä¼fen, ob Position durch SL geschlossen wurde
+tradeClosed = strategy.position_size == 0 and prevPositionSize != 0
+
+// Variable fä¼r SL-Status
+var bool closedBySL = false
+var float closePriceOnExit = na
+
+if tradeClosed
+    // Close-Preis der Exit-Kerze
+    closePriceOnExit := close[1] 
+    
+    // Prä¼fen ob Exit im Verlustbereich (SL) lag
+    if tradeDir[1] == 1 // Long
+        closedBySL := closePriceOnExit < slPrice[1]
+    else if tradeDir[1] == -1 // Short
+        closedBySL := closePriceOnExit > slPrice[1]
+
+// === RESET LOGIK ===
+if tradeClosed
+    lastTradeDir := tradeDir[1]
+    stage := 0
+    entryPrice := na
+    slPrice := na
+    tradeDir := 0
+    tp1Executed := false  // Reset TP1 Status
+    tp1ExitPrice := na    // Reset TP1 Exit-Preis
+    // Nur auf Basis-Touch warten bei SL-Verlust
+    waitingForBasisTouch := closedBySL
+    strategy.cancel_all()
+    closedBySL := false
+
+prevPositionSize := strategy.position_size
+
+// === WARTEN AUF BASIS-TOUCH ===
+// Kurs muss Basis berä¼hren bevor neue Positionen erä¶ffnet werden
+if waitingForBasisTouch
+    basistouched = (lastTradeDir == 1 and high >= basis) or (lastTradeDir == -1 and low <= basis)
+    if basistouched
+        waitingForBasisTouch := false
+
+// === ENTRY LOGIK ===
+if not isPos and not waitingForBasisTouch
+    // Limit-Orders am ä¤uäŸeren Band
+    strategy.entry("Long Entry", strategy.long, limit=lower)
+    strategy.entry("Short Entry", strategy.short, limit=upper)
+else
+    strategy.cancel("Long Entry")
+    strategy.cancel("Short Entry")
+
+// === INITIALISIERUNG BEI FILL ===
+if isPos and stage == 0
+    stage := 1
+    tradeDir := posDir
+    entryPrice := strategy.position_avg_price
+    
+    // Reset TP1 Status bei neuem Trade
+    tp1Executed := false
+    tp1ExitPrice := na
+    
+    // SL mit konfigurierbarem Prozent-Abstand
+    float slPercent = slPercentInput / 100
+    slPrice := tradeDir == 1 ? entryPrice * (1 - slPercent) : entryPrice * (1 + slPercent)
+
+// === EXIT LOGIK - KORRIGIERT FÜR TP2 ===
+if stage == 1
+    // TP1: Gegenä¼berliegendes Band oder VWMA (falls besser)
+    float tp1Limit = tradeDir == 1 ? upper : lower
+    if (tradeDir == 1 and vwma > entryPrice) or (tradeDir == -1 and vwma < entryPrice)
+        tp1Limit := vwma
+
+    // TP1 Order setzen
+    strategy.exit("TP1 50% VWMA", 
+        qty_percent = 50, 
+        limit = tp1Limit, 
+        stop = slPrice)
+    
+    // TP1 Execution erkennen - prä¼fe ob Position reduziert wurde
+    // UND ob das Limit erreicht wurde (nicht SL!)
+    positionReduced = math.abs(strategy.position_size) < math.abs(strategy.position_size[1])
+    
+    // Prüfen ob TP1 Limit erreicht wurde (Preis hat Limit berührt)
+    tp1LimitHit = false
+    if tradeDir == 1
+        tp1LimitHit := high >= tp1Limit
+    else if tradeDir == -1
+        tp1LimitHit := low <= tp1Limit
+    
+    if positionReduced and tp1LimitHit and not tp1Executed
+        tp1Executed := true
+        tp1ExitPrice := tp1Limit
+        stage := 2  // Sofort zu Stage 2 wechseln
+        // Debug
+        label.new(bar_index, high, "TP1 executed\nStage 2 active", 
+                 color=color.green, style=label.style_label_down)
+
+// Stage 2: TP2 Order - ACHTUNG: qty_percent = 100 schließt gesamte REST-Position!
+if stage == 2 and strategy.position_size != 0
+    float tp2Limit = tradeDir == 1 ? upper : lower
+    
+    // TP2 Order setzen für den REST der Position
+    // qty_percent = 100 bedeutet: schließe 100% der REST-Position (also die verbleibenden 50%)
+    strategy.exit("TP2 Rest BB",
+        limit = tp2Limit,
+        stop = entryPrice)  // Stop auf Entry für Break-even
+    
+    // Optional: Debug-Label für TP2
+    if barstate.islast
+        label.new(bar_index, high, "TP2 active\nTarget: " + str.tostring(tp2Limit), 
+                 color=color.blue, style=label.style_label_down)
+
+// === VISUALISIERUNG ===
+plot(stage > 0 ? slPrice : na, "SL Fix", color=color.red, style=plot.style_cross)
+plot(stage > 0 ? entryPrice : na, "Entry", color=color.gray, style=plot.style_circles)
+
+// Debug-Anzeige für Stage und TP1 Status
+plotchar(stage, "Stage", "", location.top)
+plotchar(tp1Executed ? 1 : 0, "TP1 Executed", "", location.bottom)
+
+// TP1 und TP2 Ziele visualisieren
+plot(stage == 1 ? (tradeDir == 1 ? upper : lower) : na, "TP1 Target", 
+     color=color.orange, style=plot.style_circles, linewidth=2)
+plot(stage == 2 ? (tradeDir == 1 ? upper : lower) : na, "TP2 Target", 
+     color=color.purple, style=plot.style_circles, linewidth=2)
